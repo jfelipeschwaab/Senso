@@ -6,6 +6,7 @@
 import Vision
 import CoreVideo
 import CoreGraphics
+import os
 
 struct DetectedObstacle {
     enum Kind {
@@ -36,25 +37,61 @@ struct DetectedObstacle {
         case .person: subject = "Pessoa"
         case .object: subject = "Obstáculo"
         }
+        if proximity == .near {
+            return "\(subject) \(position.rawValue)!"
+        }
         return "\(subject) \(proximity.rawValue) \(position.rawValue)"
     }
 }
 
-final class ObstacleDetector {
+final class ObstacleDetector: @unchecked Sendable {
+    private let inferenceQueue = DispatchQueue(label: "senso.detector.inference",
+                                               qos: .userInitiated)
     private let sequenceHandler = VNSequenceRequestHandler()
 
-    func detect(in pixelBuffer: CVPixelBuffer,
-                completion: @escaping ([DetectedObstacle]) -> Void) {
-        let personRequest = VNDetectHumanRectanglesRequest()
-        personRequest.upperBodyOnly = false
+    private let personRequest: VNDetectHumanRectanglesRequest = {
+        let request = VNDetectHumanRectanglesRequest()
+        request.upperBodyOnly = false
+        return request
+    }()
 
-        let saliencyRequest = VNGenerateObjectnessBasedSaliencyImageRequest()
+    private let saliencyRequest = VNGenerateObjectnessBasedSaliencyImageRequest()
+
+    private let busyLock = OSAllocatedUnfairLock(initialState: false)
+    private var frameCounter: UInt64 = 0
+    private let saliencyEveryNFrames: UInt64 = 3
+
+    /// Submits a frame for detection. Returns immediately. If a previous frame is
+    /// still being processed, the new frame is dropped (back-pressure).
+    /// `completion` is invoked on the inference queue — hop to main if needed.
+    func submit(_ pixelBuffer: CVPixelBuffer,
+                completion: @escaping ([DetectedObstacle]) -> Void) {
+        let accepted = busyLock.withLock { busy -> Bool in
+            guard !busy else { return false }
+            busy = true
+            return true
+        }
+        guard accepted else { return }
+
+        inferenceQueue.async { [self] in
+            let obstacles = runRequests(on: pixelBuffer)
+            busyLock.withLock { $0 = false }
+            completion(obstacles)
+        }
+    }
+
+    private func runRequests(on pixelBuffer: CVPixelBuffer) -> [DetectedObstacle] {
+        let runSaliency = (frameCounter % saliencyEveryNFrames == 0)
+        frameCounter &+= 1
+
+        let requests: [VNRequest] = runSaliency
+            ? [personRequest, saliencyRequest]
+            : [personRequest]
 
         do {
-            try sequenceHandler.perform([personRequest, saliencyRequest], on: pixelBuffer)
+            try sequenceHandler.perform(requests, on: pixelBuffer)
         } catch {
-            completion([])
-            return
+            return []
         }
 
         var obstacles: [DetectedObstacle] = []
@@ -65,7 +102,8 @@ final class ObstacleDetector {
             }
         }
 
-        if let saliency = saliencyRequest.results?.first,
+        if runSaliency,
+           let saliency = saliencyRequest.results?.first,
            let salientObjects = saliency.salientObjects {
             for object in salientObjects where object.confidence > 0.3 {
                 let bbox = object.boundingBox
@@ -75,7 +113,9 @@ final class ObstacleDetector {
             }
         }
 
-        completion(obstacles.sorted { $0.area > $1.area })
+        guard !obstacles.isEmpty else { return [] }
+        let top = obstacles.max { $0.area < $1.area }!
+        return [top]
     }
 
     private func makeObstacle(kind: DetectedObstacle.Kind,

@@ -15,12 +15,8 @@ final class SensoViewModel: ObservableObject {
     @Published private(set) var lastObstacles: [DetectedObstacle] = []
 
     let camera = CameraManager()
-    private let detector = ObstacleDetector()
-    private let announcer = SpeechAnnouncer()
-
-    private var isProcessingFrame = false
-    private var lastDetectionTime = Date.distantPast
-    private let detectionInterval: TimeInterval = 0.4
+    nonisolated private let detector = ObstacleDetector()
+    nonisolated private let announcer = SpeechAnnouncer()
 
     init() {
         camera.delegate = self
@@ -42,20 +38,10 @@ final class SensoViewModel: ObservableObject {
 
 extension SensoViewModel: CameraManagerDelegate {
     nonisolated func cameraManager(_ manager: CameraManager, didOutput pixelBuffer: CVPixelBuffer) {
-        Task { @MainActor [weak self] in
+        detector.submit(pixelBuffer) { [weak self] obstacles in
             guard let self else { return }
-            guard !self.isProcessingFrame else { return }
-            let now = Date()
-            guard now.timeIntervalSince(self.lastDetectionTime) >= self.detectionInterval else { return }
-            self.lastDetectionTime = now
-            self.isProcessingFrame = true
-
-            self.detector.detect(in: pixelBuffer) { [weak self] obstacles in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.handle(obstacles: obstacles)
-                    self.isProcessingFrame = false
-                }
+            Task { @MainActor in
+                self.handle(obstacles: obstacles)
             }
         }
     }

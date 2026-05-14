@@ -4,6 +4,7 @@
 //
 
 import AVFoundation
+import CoreMedia
 import CoreVideo
 
 protocol CameraManagerDelegate: AnyObject {
@@ -15,9 +16,13 @@ final class CameraManager: NSObject {
     weak var delegate: CameraManagerDelegate?
 
     private let sessionQueue = DispatchQueue(label: "senso.camera.session")
-    private let videoOutputQueue = DispatchQueue(label: "senso.camera.output")
+    private let videoOutputQueue = DispatchQueue(label: "senso.camera.output",
+                                                 qos: .userInitiated)
     private let videoOutput = AVCaptureVideoDataOutput()
+    private var device: AVCaptureDevice?
     private var isConfigured = false
+
+    private let targetFPS: Int32 = 10
 
     func requestAccessAndStart() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -50,7 +55,7 @@ final class CameraManager: NSObject {
 
     private func configureSession() {
         session.beginConfiguration()
-        session.sessionPreset = .hd1280x720
+        session.sessionPreset = .vga640x480
 
         guard
             let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
@@ -60,11 +65,13 @@ final class CameraManager: NSObject {
             session.commitConfiguration()
             return
         }
+        self.device = device
         session.addInput(input)
 
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
+            kCVPixelBufferPixelFormatTypeKey as String:
+                Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
         ]
         videoOutput.setSampleBufferDelegate(self, queue: videoOutputQueue)
 
@@ -80,7 +87,22 @@ final class CameraManager: NSObject {
         }
 
         session.commitConfiguration()
+
+        capFrameRate(on: device)
+
         isConfigured = true
+    }
+
+    private func capFrameRate(on device: AVCaptureDevice) {
+        let frameDuration = CMTime(value: 1, timescale: targetFPS)
+        do {
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+            device.unlockForConfiguration()
+        } catch {
+            // Best-effort: if locking fails, the session still works at default rate.
+        }
     }
 }
 
