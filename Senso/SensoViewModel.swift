@@ -50,6 +50,7 @@ extension SensoViewModel: CameraManagerDelegate {
         lastObstacles = obstacles
         guard let priority = obstacles.first else {
             statusMessage = "Caminho livre."
+            announcer.reset()
             return
         }
         let message = priority.spokenDescription

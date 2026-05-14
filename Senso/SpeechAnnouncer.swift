@@ -9,8 +9,6 @@ final class SpeechAnnouncer: @unchecked Sendable {
     private let synthesizer = AVSpeechSynthesizer()
     private let lock = NSLock()
     private var lastAnnouncement: String = ""
-    private var lastAnnouncementDate = Date.distantPast
-    private let repeatCooldown: TimeInterval = 1.5
 
     init() {
         #if os(iOS)
@@ -21,21 +19,18 @@ final class SpeechAnnouncer: @unchecked Sendable {
         #endif
     }
 
+    /// Speaks `text` once. Repeated calls with the same text are ignored until
+    /// either a different text is announced or `reset()` is called.
     func announce(_ text: String) {
-        let now = Date()
-
         lock.lock()
-        let sameAsLast = text == lastAnnouncement
-        let withinCooldown = now.timeIntervalSince(lastAnnouncementDate) < repeatCooldown
-        if sameAsLast && withinCooldown {
+        if text == lastAnnouncement {
             lock.unlock()
             return
         }
         lastAnnouncement = text
-        lastAnnouncementDate = now
         lock.unlock()
 
-        // New text takes over immediately; finish current word for clean audio.
+        // New, distinct message — interrupt current speech at end of current word.
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .word)
         }
@@ -45,5 +40,14 @@ final class SpeechAnnouncer: @unchecked Sendable {
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
         utterance.pitchMultiplier = 1.0
         synthesizer.speak(utterance)
+    }
+
+    /// Clears the last announcement memory so the next call to `announce` will
+    /// speak even if the text matches a previously spoken one. Use when the
+    /// situation changes meaningfully (e.g., path becomes clear).
+    func reset() {
+        lock.lock()
+        lastAnnouncement = ""
+        lock.unlock()
     }
 }
