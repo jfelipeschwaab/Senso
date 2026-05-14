@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = SensoViewModel()
+    @ObservedObject private var viewModel = SensoSession.viewModel
 
     var body: some View {
         ZStack {
